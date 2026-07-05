@@ -1,23 +1,30 @@
 # git-cgi-server
 
 A single container image: **cgit** web UI plus **git smart-HTTP** (clone *and*
-anonymous push), served by **lighttpd**.
+anonymous push), served by **Apache**.
 
 Published to `ghcr.io/zachahn/git-cgi-server` by GitHub Actions on every push
 to `main`.
 
 - **Web UI**: cgit at the container's port 80
-- **Clone / push**: `http://<host>/git/<repo>.git`
+- **Clone / push**: `http://<host>/<repo>.git`
+- **Browse**: `http://<host>/<repo>.git/` — the same URL, no prefix
 - **Push is unauthenticated** — anyone who can reach port 80 can push to any
   repo. Intended for a trusted LAN / tailnet only.
+
+Clone/push and browse share one URL space. Apache routes git's smart-HTTP
+requests (`HEAD`, `info/refs?service=…`, `git-upload-pack`, `git-receive-pack`)
+to git-http-backend and sends everything else to cgit, so a single URL serves
+both.
 
 ## Layout
 
 ```
-Dockerfile      # cgit + git-http-backend + lighttpd on debian:stable-slim
-lighttpd.conf   # routes /git/* to git-http-backend, everything else to cgit
+Dockerfile      # cgit + git-http-backend + apache on debian:stable-slim
+apache.conf     # routes smart-HTTP to git-http-backend, everything else to cgit
 cgitrc          # cgit config (scans /srv/git, advertises clone URLs)
-entrypoint.sh   # per-start repo prep, then runs lighttpd
+create-repo.sh  # single creation path: inits a bare repo as www-data (-> /usr/local/bin/create-repo)
+entrypoint.sh   # per-start repo prep (re-runs create-repo per repo), then runs apache
 compose.yaml    # minimal example for running the published image locally
 .github/workflows/publish.yaml  # builds and pushes the image to ghcr.io
 ```
@@ -25,10 +32,15 @@ compose.yaml    # minimal example for running the published image locally
 ## The image
 
 `entrypoint.sh` runs on **every container start**, not at build time. It marks
-every `*.git` repo under `/srv/git` as a `safe.directory`, symlinks
-`git-http-backend` to a `.cgi` name (lighttpd dispatches CGI by suffix), and
-enables `http.receivepack` so each bare repo accepts anonymous push. After
-adding a repo, restart the container so the entrypoint prepares it.
+every `*.git` repo under `/srv/git` as a `safe.directory`, hands the repo root to
+`www-data` (Apache refuses to run as root, so it serves as `www-data` and needs
+write access to push objects), then re-runs `create-repo` for each existing repo
+to re-apply push config and heal ownership.
+
+`create-repo <name>` is the **single creation path**. It inits the bare repo as
+`www-data` — so the repo and every object are `www-data`-owned from birth, never
+root — and enables `http.receivepack`. It is a no-op on an existing repo's
+objects, so the entrypoint calls it safely on every start.
 
 Repos live under `/srv/git`, expected to be a mounted volume.
 
@@ -44,8 +56,8 @@ docker run -d --name git \
 Add a bare repo and it appears in cgit and becomes clonable / pushable:
 
 ```sh
-docker exec git git init --bare /srv/git/myrepo.git
-docker restart git   # entrypoint enables push + refreshes safe.directory
+docker exec git create-repo myrepo   # inits as www-data, enables push
+docker restart git                   # cgit picks up the new repo
 ```
 
 ## Building locally
