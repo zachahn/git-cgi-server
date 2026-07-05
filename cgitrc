@@ -7,6 +7,12 @@ logo=/cgit.png
 # Injected into <head>; carries the viewport meta tag the responsive css needs.
 head-include=/etc/cgit/head.html
 
+# Emit root-relative links (/repo.git/...) instead of the SCRIPT_NAME default
+# (/cgit.cgi/repo.git/...). lighttpd rewrites incoming /repo.git paths onto
+# cgit.cgi, but /cgit.cgi/... is not itself routable, so without this every
+# generated link 404s.
+virtual-root=/
+
 # Repository root scanned on each request.
 scan-path=/srv/git
 
