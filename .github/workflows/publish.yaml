@@ -5,6 +5,10 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+  # Weekly rebuild so apt packages (cgit, git, lighttpd) pick up
+  # Debian security updates even when the repo is idle.
+  schedule:
+    - cron: '17 4 * * 1'
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
