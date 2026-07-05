@@ -14,3 +14,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Keep the responsive-cgit-css submodule pinned to upstream's latest commit.
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly

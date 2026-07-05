@@ -12,6 +12,11 @@ COPY cgitrc        /etc/cgitrc
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Responsive theme (git submodule, GPL-3.0). Overwrite the stock stylesheet
+# and add the viewport meta tag its media queries need.
+COPY vendor/responsive-cgit-css/cgit.css /usr/share/cgit/cgit.css
+COPY vendor/responsive-cgit-css/head.html /etc/cgit/head.html
+
 EXPOSE 80
 VOLUME /srv/git
 WORKDIR /srv/git

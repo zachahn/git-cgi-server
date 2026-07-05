@@ -1,0 +1,3 @@
+[submodule "vendor/responsive-cgit-css"]
+	path = vendor/responsive-cgit-css
+	url = https://github.com/MatejaMaric/responsive-cgit-css.git
