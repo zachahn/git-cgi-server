@@ -3,7 +3,6 @@
 
 css=/cgit.css
 logo=/cgit.png
-
 # Injected into <head>; carries the viewport meta tag the responsive css needs.
 head-include=/etc/cgit/head.html
 
@@ -16,15 +15,7 @@ virtual-root=/
 # Repository root scanned on each request.
 scan-path=/srv/git
 
-# Advertised clone URLs. cgit substitutes the repo path.
-enable-http-clone=1
-clone-url=http://$HTTP_HOST/git/$CGIT_REPO_URL
-
 # UI niceties
-enable-index-owner=0
 enable-commit-graph=1
 enable-log-filecount=1
 enable-log-linecount=1
-snapshots=tar.gz zip
-root-title=Homelab Git
-root-desc=cgit + git-http-backend served by lighttpd
