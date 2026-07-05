@@ -1,0 +1,15 @@
+# Minimal example for running the published image on its own.
+# The Homelab deployment (with the Tailscale sidecar) lives in the Homelab repo.
+services:
+  git:
+    image: ghcr.io/zachahn/git-cgi-server:latest
+    container_name: git
+    restart: always
+    ports:
+      - "8080:80"
+    volumes:
+      - repos:/srv/git
+
+volumes:
+  repos:
+    name: cgit-repos
