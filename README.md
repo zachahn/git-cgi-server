@@ -1,7 +1,8 @@
 # git-cgi-server
 
 A single container image: **cgit** web UI plus **git smart-HTTP** (clone *and*
-anonymous push), served by **Apache**.
+anonymous push), served by **Apache**, with a small CGI admin tool for creating
+and deleting repos.
 
 Published to `ghcr.io/zachahn/git-cgi-server` by GitHub Actions on every push
 to `main`.
@@ -9,8 +10,11 @@ to `main`.
 - **Web UI**: cgit at the container's port 80
 - **Clone / push**: `http://<host>/<repo>.git`
 - **Browse**: `http://<host>/<repo>.git/` — the same URL, no prefix
-- **Push is unauthenticated** — anyone who can reach port 80 can push to any
-  repo. Intended for a trusted LAN / tailnet only.
+- **Manage**: `http://<host>/manage/` creates, deletes, renames, and describes
+  repos from the browser
+- **Push and manage are both unauthenticated** — anyone who can reach port 80
+  can push to any repo and can delete any repo. Intended for a trusted LAN /
+  tailnet only.
 
 Clone/push and browse share one URL space. Apache routes git's smart-HTTP
 requests (`HEAD`, `info/refs?service=…`, `git-upload-pack`, `git-receive-pack`)
@@ -21,12 +25,13 @@ both.
 
 ```
 Dockerfile      # cgit + git-http-backend + apache on debian:stable-slim
-apache.conf     # routes smart-HTTP to git-http-backend, everything else to cgit
+apache.conf     # routes smart-HTTP to git-http-backend, /manage to cgit-manage, the rest to cgit
 cgitrc          # cgit config (scans /srv/git, advertises clone URLs)
 create-repo.sh  # single creation path: inits a bare repo as www-data (-> /usr/local/bin/create-repo)
 entrypoint.sh   # per-start repo prep (re-runs create-repo per repo), then runs apache
+cgit-manage/    # Rust CGI admin tool, built into the image (src/, tests/, see its README)
 compose.yaml    # minimal example for running the published image locally
-.github/workflows/publish.yaml  # builds and pushes the image to ghcr.io
+.github/workflows/publish.yaml  # tests cgit-manage, then builds and pushes the image to ghcr.io
 ```
 
 ## The image
@@ -44,6 +49,25 @@ objects, so the entrypoint calls it safely on every start.
 
 Repos live under `/srv/git`, expected to be a mounted volume.
 
+## The admin tool
+
+`cgit-manage/` holds a small Rust CGI program. A builder stage compiles it and
+the final image copies the binary to `/usr/local/lib/cgit-manage/cgit-manage`.
+Apache serves it at `/manage/` and gives it `GIT_ROOT=/srv/git`. The program
+creates, deletes, renames, and describes repos, and cgit lists each change on
+its next request.
+
+The CGI process runs as `www-data`, so a repo it creates is `www-data`-owned
+like one `create-repo` makes. It runs a plain `git init --bare` and writes no
+per-repo push config, so the image sets `http.receivepack` and
+`http.uploadpack` in **system** config. A repo created from the browser accepts
+pushes immediately, with no restart.
+
+`/manage` has no password. A repo named `manage.git` still browses at
+`/manage.git/`, because the route matches `/manage` only at a slash or the end
+of the path. `cgit-manage/README.md` covers the path checks and how to put
+basic auth in front of the tool.
+
 ## Running
 
 ```sh
@@ -53,12 +77,15 @@ docker run -d --name git \
   ghcr.io/zachahn/git-cgi-server:latest
 ```
 
-Add a bare repo and it appears in cgit and becomes clonable / pushable:
+Add a repo at `http://<host>/manage/`. It appears in cgit and accepts clones and
+pushes right away. `create-repo` remains for the case where the web UI is
+unreachable:
 
 ```sh
 docker exec git create-repo myrepo   # inits as www-data, enables push
-docker restart git                   # cgit picks up the new repo
 ```
+
+cgit rescans `/srv/git` on every request, so neither route needs a restart.
 
 ## Building locally
 

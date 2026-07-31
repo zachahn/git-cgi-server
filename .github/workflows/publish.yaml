@@ -25,6 +25,11 @@ jobs:
         with:
           submodules: true
 
+      # Run the cgit-manage tests natively before the emulated image build,
+      # so a broken name check fails the run in seconds instead of minutes.
+      - name: Test cgit-manage
+        run: cargo test --locked --manifest-path cgit-manage/Cargo.toml
+
       # arm64 builds run under QEMU emulation on the amd64 runner.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

@@ -1,0 +1,14 @@
+[package]
+name = "cgit-manage"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cgit-manage"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+strip = true
+lto = true
