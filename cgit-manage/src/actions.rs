@@ -44,8 +44,11 @@ impl From<PathError> for ActionError {
 
 /// Create a bare repo, then seed its description and owner.
 ///
-/// cgit with `scan-path` lists the repo on its next request. The description
-/// and owner files give cgit the text it shows on the index and summary.
+/// A name with slashes puts the repo in a subfolder, so the function makes
+/// any missing folder on the way down. cgit with `scan-path` scans folders
+/// recursively, so it lists the repo under that path on its next request.
+/// The description and owner files give cgit the text it shows on the index
+/// and summary.
 pub fn create(
     root: &Path,
     name: &str,
@@ -57,15 +60,23 @@ pub fn create(
         return Err(ActionError::Existence(format!("repo {name:?} already exists")));
     }
 
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(ActionError::Io)?;
+    }
+
     let output = Command::new("git")
         .arg("init")
         .arg("--bare")
         .arg("--quiet")
         .arg(&path)
         .output()
-        .map_err(|e| ActionError::Git(format!("could not run git: {e}")))?;
+        .map_err(|e| {
+            prune_empty_folders(root, &path);
+            ActionError::Git(format!("could not run git: {e}"))
+        })?;
 
     if !output.status.success() {
+        prune_empty_folders(root, &path);
         let msg = String::from_utf8_lossy(&output.stderr);
         return Err(ActionError::Git(msg.trim().to_string()));
     }
@@ -82,6 +93,10 @@ pub fn create(
 }
 
 /// Remove a repo directory and everything under it.
+///
+/// Deleting the last repo in a subfolder leaves the folder behind, and cgit
+/// shows an empty folder as nothing at all. The function removes each folder
+/// the repo leaves empty, up to but not including the root.
 pub fn delete(root: &Path, name: &str, actor: Option<&str>) -> Result<(), ActionError> {
     let path = repo::repo_path(root, name)?;
     if !path.exists() {
@@ -89,11 +104,16 @@ pub fn delete(root: &Path, name: &str, actor: Option<&str>) -> Result<(), Action
     }
 
     std::fs::remove_dir_all(&path).map_err(ActionError::Io)?;
+    prune_empty_folders(root, &path);
     log("delete", name, actor);
     Ok(())
 }
 
 /// Move a repo directory from one validated name to another.
+///
+/// The new name may name a different subfolder, so the move doubles as a way
+/// to file a repo away. The function makes the folders the new name needs and
+/// removes the ones the old name leaves empty.
 pub fn rename(
     root: &Path,
     old: &str,
@@ -110,7 +130,15 @@ pub fn rename(
         return Err(ActionError::Existence(format!("repo {new:?} already exists")));
     }
 
-    std::fs::rename(&from, &to).map_err(ActionError::Io)?;
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(ActionError::Io)?;
+    }
+
+    std::fs::rename(&from, &to).map_err(|e| {
+        prune_empty_folders(root, &to);
+        ActionError::Io(e)
+    })?;
+    prune_empty_folders(root, &from);
     log("rename", &format!("{old} -> {new}"), actor);
     Ok(())
 }
@@ -138,6 +166,31 @@ fn write_description(root: &Path, name: &str, description: &str) -> Result<(), A
     text.push('\n');
     std::fs::write(path.join("description"), text).map_err(ActionError::Io)?;
     Ok(())
+}
+
+/// Remove the folders above `path` that now hold nothing.
+///
+/// The walk climbs from the repo's parent toward the root and stops at the
+/// first folder that still holds something, because `remove_dir` refuses a
+/// non-empty directory. It never removes the root itself and never touches a
+/// path outside it. A failure leaves an empty folder behind, which costs
+/// nothing, so the function reports no error.
+fn prune_empty_folders(root: &Path, path: &Path) {
+    let canonical_root = match root.canonicalize() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if dir == canonical_root || !dir.starts_with(&canonical_root) {
+            return;
+        }
+        if std::fs::remove_dir(dir).is_err() {
+            return;
+        }
+        current = dir.parent();
+    }
 }
 
 /// Record one mutating action on standard error for the web server log.
@@ -185,6 +238,24 @@ mod tests {
     }
 
     #[test]
+    fn create_makes_the_folders_a_nested_name_needs() {
+        let d = root("create-nested");
+        create(d.path(), "work/team/site", "", None).unwrap();
+
+        assert!(d.exists("work/team/site.git/HEAD"), "the repo sits in the folders");
+    }
+
+    #[test]
+    fn create_puts_a_second_repo_in_an_existing_folder() {
+        let d = root("create-nested-sibling");
+        create(d.path(), "work/one", "", None).unwrap();
+        create(d.path(), "work/two", "", None).unwrap();
+
+        assert!(d.exists("work/one.git/HEAD"));
+        assert!(d.exists("work/two.git/HEAD"));
+    }
+
+    #[test]
     fn create_refuses_a_name_already_taken() {
         let d = root("create-dup");
         create(d.path(), "demo", "", None).unwrap();
@@ -228,6 +299,27 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_the_folders_it_empties() {
+        let d = root("delete-nested");
+        create(d.path(), "work/team/site", "", None).unwrap();
+
+        delete(d.path(), "work/team/site", None).unwrap();
+
+        assert!(!d.exists("work"), "the empty folders went with the repo");
+    }
+
+    #[test]
+    fn delete_keeps_a_folder_that_still_holds_a_repo() {
+        let d = root("delete-nested-sibling");
+        create(d.path(), "work/one", "", None).unwrap();
+        create(d.path(), "work/two", "", None).unwrap();
+
+        delete(d.path(), "work/one", None).unwrap();
+
+        assert!(d.exists("work/two.git/HEAD"), "the sibling survives");
+    }
+
+    #[test]
     fn delete_refuses_a_missing_repo() {
         let d = root("delete-missing");
         let err = delete(d.path(), "demo", None).unwrap_err();
@@ -252,6 +344,29 @@ mod tests {
         assert!(!d.exists("demo.git"), "the old name is gone");
         assert_eq!(d.read("archive.git/marker"), "still here");
         assert_eq!(d.read("archive.git/description"), "A test repo\n");
+    }
+
+    #[test]
+    fn rename_moves_a_repo_into_a_folder() {
+        let d = root("rename-into-folder");
+        create(d.path(), "demo", "", None).unwrap();
+        d.write("demo.git/marker", "still here");
+
+        rename(d.path(), "demo", "archive/2024/demo", None).unwrap();
+
+        assert!(!d.exists("demo.git"), "the old name is gone");
+        assert_eq!(d.read("archive/2024/demo.git/marker"), "still here");
+    }
+
+    #[test]
+    fn rename_moves_a_repo_out_of_a_folder_and_prunes_it() {
+        let d = root("rename-out-of-folder");
+        create(d.path(), "work/site", "", None).unwrap();
+
+        rename(d.path(), "work/site", "site", None).unwrap();
+
+        assert!(d.exists("site.git/HEAD"));
+        assert!(!d.exists("work"), "the emptied folder went with the move");
     }
 
     #[test]

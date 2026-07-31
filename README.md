@@ -47,7 +47,11 @@ to re-apply push config and heal ownership.
 root — and enables `http.receivepack`. It is a no-op on an existing repo's
 objects, so the entrypoint calls it safely on every start.
 
-Repos live under `/srv/git`, expected to be a mounted volume.
+Repos live under `/srv/git`, expected to be a mounted volume. A name may carry
+slashes, so `work/site` puts the repo at `/srv/git/work/site.git`. cgit scans
+the root recursively and lists it as `work/site.git`, and git clones it from
+`/work/site.git`. `create-repo` makes the folders such a name needs and hands
+any folder an earlier root-run left behind to `www-data`.
 
 ## The admin tool
 
@@ -56,6 +60,10 @@ the final image copies the binary to `/usr/local/lib/cgit-manage/cgit-manage`.
 Apache serves it at `/manage/` and gives it `GIT_ROOT=/srv/git`. The program
 creates, deletes, renames, and describes repos, and cgit lists each change on
 its next request.
+
+A name with slashes nests the repo in a folder, the same way `create-repo`
+does. The tool makes the folders a name needs, removes the ones a delete
+empties, and treats a rename into another folder as a move.
 
 The CGI process runs as `www-data`, so a repo it creates is `www-data`-owned
 like one `create-repo` makes. It runs a plain `git init --bare` and writes no
@@ -82,7 +90,8 @@ pushes right away. `create-repo` remains for the case where the web UI is
 unreachable:
 
 ```sh
-docker exec git create-repo myrepo   # inits as www-data, enables push
+docker exec git create-repo myrepo        # inits as www-data, enables push
+docker exec git create-repo work/site     # /srv/git/work/site.git
 ```
 
 cgit rescans `/srv/git` on every request, so neither route needs a restart.

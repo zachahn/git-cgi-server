@@ -275,6 +275,82 @@ fn create_refuses_the_names_the_allowlist_bars() {
     assert!(d.exists(&long_name), "64 characters is still accepted");
 }
 
+// --- nesting ---
+
+#[test]
+fn create_nests_a_repo_in_a_folder_and_lists_the_full_name() {
+    let d = TempDir::new("nested-create");
+    let r = post(&d, "/create", "name=work%2Fsite&description=The+site");
+
+    assert_eq!(r.status, 200);
+    assert!(d.exists("work/site.git/HEAD"));
+    assert_eq!(d.read("work/site.git/description"), "The site\n");
+    r.assert_has("Created work/site.");
+    r.assert_has("<h2>work/site</h2>");
+}
+
+#[test]
+fn the_index_lists_nested_repos_beside_root_ones() {
+    let d = TempDir::new("nested-listing");
+    post(&d, "/create", "name=top");
+    post(&d, "/create", "name=work%2Fa%2Fdeep");
+    post(&d, "/create", "name=work%2Fsite");
+
+    let r = get(&d, "/");
+
+    r.assert_has("<h2>top</h2>");
+    r.assert_has("<h2>work/site</h2>");
+    r.assert_has("<h2>work/a/deep</h2>");
+}
+
+#[test]
+fn describe_and_delete_address_a_nested_repo_by_its_full_name() {
+    let d = TempDir::new("nested-describe");
+    post(&d, "/create", "name=work%2Fsite");
+
+    let described = post(&d, "/describe", "name=work%2Fsite&description=hello");
+    assert_eq!(described.status, 200);
+    assert_eq!(d.read("work/site.git/description"), "hello\n");
+
+    let deleted = post(&d, "/delete", "name=work%2Fsite&confirm=yes");
+    assert_eq!(deleted.status, 200);
+    assert!(!d.exists("work"), "the emptied folder went with the repo");
+}
+
+#[test]
+fn rename_moves_a_repo_between_folders() {
+    let d = TempDir::new("nested-rename");
+    post(&d, "/create", "name=demo");
+
+    let r = post(&d, "/rename", "old=demo&new=archive%2F2024%2Fdemo");
+
+    assert_eq!(r.status, 200);
+    assert!(d.exists("archive/2024/demo.git/HEAD"));
+    r.assert_has("Renamed demo to archive/2024/demo.");
+}
+
+#[test]
+fn create_refuses_the_nested_names_the_allowlist_bars() {
+    let d = TempDir::new("nested-refused");
+    let cases = [
+        ("name=%2Fsite", "a leading slash"),
+        ("name=work%2F", "a trailing slash"),
+        ("name=work%2F%2Fsite", "a doubled slash"),
+        ("name=work%2F..%2F..%2Fescape", "a traversal through a folder"),
+        ("name=work%2F.hidden", "a hidden component"),
+        ("name=work.git%2Fsite", "a folder that looks like a repo"),
+        ("name=a%2Fb%2Fc%2Fd%2Fe%2Ff%2Fg%2Fh%2Fi", "nine components"),
+    ];
+
+    for (body, what) in cases {
+        let r = post(&d, "/create", body);
+        assert_eq!(r.status, 400, "{what} must be refused; body was {body:?}");
+    }
+
+    let made = std::fs::read_dir(d.path()).unwrap().count();
+    assert_eq!(made, 0, "a refused name creates nothing at all");
+}
+
 // --- the index listing ---
 
 #[test]

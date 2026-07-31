@@ -6,6 +6,9 @@
 #
 # Usage: create-repo <name>
 #   <name> may omit the .git suffix; it is added if missing.
+#   <name> may carry slashes, so `create-repo work/site` inits
+#   /srv/git/work/site.git. cgit scans the root recursively and lists the repo
+#   under that path.
 set -eu
 
 REPO_ROOT=/srv/git
@@ -17,12 +20,29 @@ if [ $# -ne 1 ]; then
 fi
 
 name=${1%.git}
-if ! printf '%s' "$name" | grep -qE '^[A-Za-z0-9._-]+$'; then
-  echo "error: name must be alphanumerics, '.', '_', or '-'" >&2
+# Each slash-separated component starts with an alphanumeric, so no component
+# is empty, hidden, or `..`. This matches the allowlist cgit-manage applies.
+if ! printf '%s' "$name" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$'; then
+  echo "error: name must be alphanumerics, '.', '_', or '-', with '/' between folders" >&2
   exit 1
 fi
 
 repo="$REPO_ROOT/${name}.git"
+
+# A nested name needs its folders. Hand any folder an earlier root-run left
+# behind to www-data first, because the mkdir below runs as www-data and needs
+# to write inside them.
+folder=$(dirname "$repo")
+path="$folder"
+while [ "$path" != "$REPO_ROOT" ] && [ "$path" != "/" ]; do
+  if [ -d "$path" ]; then
+    find "$path" -maxdepth 0 ! -user "$RUN_AS" -exec chown "$RUN_AS:$RUN_AS" {} + 2>/dev/null || true
+  fi
+  path=$(dirname "$path")
+done
+if [ "$folder" != "$REPO_ROOT" ]; then
+  setpriv --reuid="$RUN_AS" --regid="$RUN_AS" --init-groups mkdir -p "$folder"
+fi
 
 # init only when absent; on an existing repo this is a no-op so the entrypoint
 # can call create-repo to re-apply config without clobbering objects. Running as

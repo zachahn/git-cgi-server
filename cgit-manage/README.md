@@ -9,6 +9,19 @@ The tool does one thing per request. It reads the request as a CGI program,
 checks the repo name against a strict allowlist, and runs one filesystem
 operation inside `GIT_ROOT`.
 
+## Folders
+
+A repo name may carry slashes, so `work/site` names the repo `site` in the
+folder `work`. The tool creates `<GIT_ROOT>/work/site.git`, cgit scans the root
+recursively and lists it as `work/site.git`, and git clones it from
+`/work/site.git`. A name nests at most 8 levels deep.
+
+The tool manages the folders itself. Create makes the folders a name needs.
+Delete removes the folders the repo leaves empty, up to but not including the
+root. Rename accepts a new name in a different folder, so it also moves a repo:
+`demo` to `archive/2024/demo` files the repo away and `work/site` to `site`
+lifts it back out.
+
 ## Where it runs
 
 The `Dockerfile` builds this crate in a Rust stage and copies the one binary to
@@ -38,13 +51,17 @@ the `LoadModule` list, then replace `Require all granted` with `AuthType Basic`,
 `AuthUserFile`, and `Require valid-user`. Apache then passes the authenticated
 name in `REMOTE_USER` and the tool records it as each repo's owner.
 
-Two independent checks confine every path, whoever the caller is:
+Three independent checks confine every path, whoever the caller is:
 
-- A character allowlist accepts a repo name only when it matches
-  `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, stays within 64 characters, is not a dot
-  component, and does not end in `.git`.
+- A character allowlist splits the name on `/` and accepts a component only
+  when it matches `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, stays within 64 characters,
+  is not a dot component, and does not end in `.git`. A name carries at most 8
+  components, so no empty, hidden, or `..` component survives.
 - The tool canonicalizes `GIT_ROOT` and asserts the built path still sits
-  under it.
+  under it, at the depth the name asked for.
+- The tool canonicalizes the deepest part of the path that exists on disk and
+  asserts that too sits under the root, so a folder that is a symlink cannot
+  point an operation out of the tree.
 
 The tool never builds a shell command. It runs `git` with an argument list and
 calls the standard library for every filesystem change, so an attacker cannot
@@ -93,16 +110,17 @@ and `tests/cgi.rs` stands in for the web server with `std::process`.
 
 The suite has two layers:
 
-- **Unit tests** in `src/`. `repo.rs` covers the name allowlist and the path
-  confinement. `cgi.rs` covers form decoding and HTML escaping. `actions.rs`
-  covers create, delete, rename, and describe against a real directory,
-  including that a refused name writes nothing outside the root.
+- **Unit tests** in `src/`. `repo.rs` covers the name allowlist, the depth
+  bound, the path confinement, and the symlinked folder. `cgi.rs` covers form
+  decoding and HTML escaping. `actions.rs` covers create, delete, rename, and
+  describe against a real directory, including that a refused name writes
+  nothing outside the root and that a delete prunes the folders it empties.
 - **End-to-end tests** in `tests/cgi.rs`. Each one runs the compiled binary the
   way Apache runs it: CGI variables in the environment, the form body on
   standard input, the response parsed off standard output. They cover routing,
-  status codes, the rule that mutations refuse GET, escaping of a description
-  and an owner that carry markup, the `CONTENT_LENGTH` bound, and the log line
-  each mutation writes.
+  status codes, the rule that mutations refuse GET, nested names through every
+  action, escaping of a description and an owner that carry markup, the
+  `CONTENT_LENGTH` bound, and the log line each mutation writes.
 
 The build stage compiles the crate, so a compile error fails `docker build`.
 The GitHub Actions workflow runs the tests natively before the image build.

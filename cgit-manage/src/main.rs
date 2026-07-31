@@ -77,10 +77,21 @@ fn index(root: &Path, req: &Request, notice: Option<&str>) {
     respond(200, "OK", &page("Repos", &body));
 }
 
+/// The HTML pattern a name field accepts: one or more allowlisted components
+/// joined by slashes. It mirrors `repo::validate_name`, so the browser
+/// refuses in the field what the tool would refuse in the request.
+const NAME_PATTERN: &str = "[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*";
+
+/// The longest name the fields accept: 8 components of 64 characters with the
+/// 7 slashes between them, the same bound `repo::validate_name` enforces.
+const NAME_MAXLENGTH: usize = 8 * 64 + 7;
+
 /// One repo's block: description form, rename form, delete form.
 fn repo_card(r: &RepoInfo) -> String {
     let name = escape_html(&r.name);
     let desc = escape_html(&r.description);
+    let pattern = NAME_PATTERN;
+    let maxlength = NAME_MAXLENGTH;
     format!(
         r#"<section class="repo">
   <h2>{name}</h2>
@@ -93,8 +104,8 @@ fn repo_card(r: &RepoInfo) -> String {
   </form>
   <form method="post" action="rename">
     <input type="hidden" name="old" value="{name}">
-    <label>Rename to
-      <input type="text" name="new" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" maxlength="64">
+    <label>Rename or move to
+      <input type="text" name="new" required pattern="{pattern}" maxlength="{maxlength}" placeholder="{name}">
     </label>
     <button type="submit">Rename</button>
   </form>
@@ -109,18 +120,25 @@ fn repo_card(r: &RepoInfo) -> String {
 
 /// The create form.
 fn new_form(_req: &Request) {
-    let body = r#"<h2>Create a repo</h2>
+    let pattern = NAME_PATTERN;
+    let maxlength = NAME_MAXLENGTH;
+    let body = format!(
+        r#"<h2>Create a repo</h2>
 <form method="post" action="create">
   <label>Name
-    <input type="text" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" maxlength="64" autofocus>
+    <input type="text" name="name" required pattern="{pattern}" maxlength="{maxlength}" placeholder="work/site" autofocus>
   </label>
   <label>Description
     <input type="text" name="description" maxlength="512">
   </label>
   <button type="submit">Create</button>
 </form>
-<p><a href="./">Back to repos</a></p>"#;
-    respond(200, "OK", &page("Create a repo", body));
+<p class="hint">A slash nests the repo in a folder. <code>work/site</code> creates
+<code>work/site.git</code>, which clones from <code>/work/site.git</code>. The tool
+makes the folders a name needs and removes the ones a delete or a move empties.</p>
+<p><a href="./">Back to repos</a></p>"#
+    );
+    respond(200, "OK", &page("Create a repo", &body));
 }
 
 fn do_create(root: &Path, req: &Request) {
@@ -178,48 +196,70 @@ struct RepoInfo {
     description: String,
 }
 
-/// Read every bare repo directly under `root`.
+/// How deep the listing walks below the root. It matches the depth the name
+/// allowlist accepts, so the index shows every repo the tool can address.
+const MAX_LIST_DEPTH: usize = 8;
+
+/// Read every bare repo under `root`, at any depth.
 ///
-/// A bare repo directory ends in `.git`. The listing strips that suffix for
-/// display, the same name the forms submit back. The function reads each
-/// repo's `description` file when present.
+/// A bare repo directory ends in `.git`. Any other directory is a folder that
+/// may hold repos, so the walk descends into it. The listing names a repo by
+/// its path below the root with the `.git` suffix stripped, so `work/site.git`
+/// lists as `work/site`, the same name the forms submit back. The function
+/// reads each repo's `description` file when present.
 fn list_repos(root: &Path) -> Vec<RepoInfo> {
     let mut repos = Vec::new();
-    let entries = match std::fs::read_dir(root) {
+    collect_repos(root, "", 1, &mut repos);
+    repos.sort_by(|a, b| a.name.cmp(&b.name));
+    repos
+}
+
+/// Walk one directory, recording the repos in it and descending into folders.
+fn collect_repos(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<RepoInfo>) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return repos,
+        Err(_) => return,
     };
 
     for entry in entries.flatten() {
+        // `file_type` does not follow symlinks, so a symlinked directory
+        // reports neither a file nor a directory and the walk skips it.
         if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
         let file_name = entry.file_name();
-        let dir = match file_name.to_str() {
+        let dir_name = match file_name.to_str() {
             Some(d) => d,
             None => continue,
         };
-        let name = match dir.strip_suffix(".git") {
-            Some(n) => n.to_string(),
+        if dir_name.starts_with('.') {
+            continue;
+        }
+
+        match dir_name.strip_suffix(".git") {
+            Some(stem) => out.push(read_repo(&entry.path(), format!("{prefix}{stem}"))),
+            None if depth < MAX_LIST_DEPTH => {
+                collect_repos(&entry.path(), &format!("{prefix}{dir_name}/"), depth + 1, out)
+            }
             None => continue,
-        };
-
-        let description = std::fs::read_to_string(entry.path().join("description"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        // git seeds a placeholder line; treat it as no description.
-        let description = if description.starts_with("Unnamed repository") {
-            String::new()
-        } else {
-            description
-        };
-
-        repos.push(RepoInfo { name, description });
+        }
     }
+}
 
-    repos.sort_by(|a, b| a.name.cmp(&b.name));
-    repos
+/// Build one listing entry from a repo directory.
+fn read_repo(path: &Path, name: String) -> RepoInfo {
+    let description = std::fs::read_to_string(path.join("description"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // git seeds a placeholder line; treat it as no description.
+    let description = if description.starts_with("Unnamed repository") {
+        String::new()
+    } else {
+        description
+    };
+
+    RepoInfo { name, description }
 }
 
 /// Wrap body content in the page shell with inline styles.
@@ -241,6 +281,7 @@ fn page(title: &str, body: &str) -> String {
   input[type=text] {{ font-size: 1rem; padding: .3rem .4rem; }}
   button {{ font-size: .9rem; padding: .4rem .8rem; cursor: pointer; }}
   button.danger {{ color: #a00; border-color: #a00; }}
+  .hint {{ font-size: .85rem; color: #555; }}
   .notice {{ background: #e7f5e7; padding: .6rem .8rem; border-radius: 4px; }}
   .error {{ background: #fbe3e3; padding: .6rem .8rem; border-radius: 4px; }}
   a {{ color: #06c; }}
